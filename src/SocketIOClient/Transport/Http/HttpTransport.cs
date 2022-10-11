@@ -33,7 +33,11 @@ namespace SocketIOClient.Transport.Http
                 {
                     if (!_httpUri.Contains("&sid="))
                     {
+#if DEBUG
+                        await Task.Delay(2000);
+#else
                         await Task.Delay(20);
+#endif
                         continue;
                     }
                     try

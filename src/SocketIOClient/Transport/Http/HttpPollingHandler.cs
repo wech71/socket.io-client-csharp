@@ -39,6 +39,9 @@ namespace SocketIOClient.Transport.Http
 
         public async Task GetAsync(string uri, CancellationToken cancellationToken)
         {
+#if DEBUG
+            Console.WriteLine($"Get {uri}");
+#endif
             var req = new HttpRequestMessage(HttpMethod.Get, AppendRandom(uri));
             var resMsg = await HttpClient.SendAsync(req, cancellationToken).ConfigureAwait(false);
             if (!resMsg.IsSuccessStatusCode)
@@ -50,6 +53,9 @@ namespace SocketIOClient.Transport.Http
 
         public async Task SendAsync(HttpRequestMessage req, CancellationToken cancellationToken)
         {
+#if DEBUG
+            Console.WriteLine($"Send {req.RequestUri}  {req.Content?.ToString()}");
+#endif
             var resMsg = await HttpClient.SendAsync(req, cancellationToken).ConfigureAwait(false);
             if (!resMsg.IsSuccessStatusCode)
             {
