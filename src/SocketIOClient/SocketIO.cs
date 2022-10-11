@@ -163,6 +163,9 @@ namespace SocketIOClient
             JsonSerializer = new SystemTextJsonSerializer();
 
             HttpClient = new HttpClient();
+            foreach (var entry in Options.ExtraHeaders)
+                HttpClient.DefaultRequestHeaders.Add(entry.Key, entry.Value);
+
             ClientWebSocketProvider = () => new SystemNetWebSocketsClientWebSocket();
             HttpClientAdapterProvider = () => new DefaultHttpClientAdapter();
             _expectedExceptions = new List<Type>
@@ -177,7 +180,6 @@ namespace SocketIOClient
 
         private void CreateTransport()
         {
-            Options.Transport = GetProtocolAsync().GetAwaiter().GetResult();
             var transportOptions = new TransportOptions
             {
                 EIO = Options.EIO,
@@ -185,6 +187,15 @@ namespace SocketIOClient
                 Auth = GetAuth(Options.Auth),
                 ConnectionTimeout = Options.ConnectionTimeout
             };
+            
+            var connectResponse = GetProtocolAsync().GetAwaiter().GetResult();
+            if (connectResponse != null)
+            {
+                Options.Transport = connectResponse.Protocol;
+                if (connectResponse.Sid != null)
+                    Options.Sid = connectResponse.Sid;
+            }
+
             if (Options.Transport == TransportProtocol.Polling)
             {
                 var adapter = HttpClientAdapterProvider();
@@ -263,7 +274,7 @@ namespace SocketIOClient
                 {
                     DisposeResources();
                     CreateTransport();
-                    _realServerUri = UriConverter.GetServerUri(Options.Transport == TransportProtocol.WebSocket, ServerUri, Options.EIO, Options.Path, Options.Query);
+                    _realServerUri = UriConverter.GetServerUri(Options.Transport == TransportProtocol.WebSocket, ServerUri, Options.EIO, Options.Sid, Options.Path, Options.Query);
                     try
                     {
                         if (cct.IsCancellationRequested)
@@ -320,17 +331,21 @@ namespace SocketIOClient
             });
         }
 
-        private async Task<TransportProtocol> GetProtocolAsync()
+        private async Task<OpenedMessage> GetProtocolAsync()
         {
             if (Options.Transport == TransportProtocol.Polling && Options.AutoUpgrade)
             {
-                Uri uri = UriConverter.GetServerUri(false, ServerUri, Options.EIO, Options.Path, Options.Query);
+                Uri uri = UriConverter.GetServerUri(false, ServerUri, Options.EIO, Options.Sid, Options.Path, Options.Query);
                 try
                 {
                     string text = await HttpClient.GetStringAsync(uri);
-                    if (text.Contains("websocket"))
+                    if (text.StartsWith("0"))
                     {
-                        return TransportProtocol.WebSocket;
+                        var openedMessage = new OpenedMessage();
+                        openedMessage.Read(text.Substring(1));
+                        if (openedMessage.Upgrades.Contains("websocket"))
+                            openedMessage.Protocol = TransportProtocol.WebSocket;
+                        return openedMessage;
                     }
                 }
                 catch (Exception e)
@@ -340,7 +355,8 @@ namespace SocketIOClient
 #endif
                 }
             }
-            return Options.Transport;
+
+            return null;
         }
 
         public async Task ConnectAsync()
@@ -653,6 +669,10 @@ namespace SocketIOClient
             if (data != null && data.Length > 0)
             {
                 var result = JsonSerializer.Serialize(data);
+#if DEBUG
+                System.Diagnostics.Debug.WriteLine($"[Send] {eventName} {result}");
+#endif
+
                 if (result.Bytes.Count > 0)
                 {
                     var msg = new BinaryMessage
@@ -677,6 +697,10 @@ namespace SocketIOClient
             }
             else
             {
+#if DEBUG
+                System.Diagnostics.Debug.WriteLine($"[Send] {eventName}");
+#endif
+
                 var msg = new EventMessage
                 {
                     Namespace = _namespace,
