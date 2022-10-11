@@ -6,7 +6,7 @@ namespace SocketIOClient.UriConverters
 {
     public static class UriConverter
     {
-        public static Uri GetServerUri(bool ws, Uri serverUri, EngineIO eio, string path, IEnumerable<KeyValuePair<string, string>> queryParams)
+        public static Uri GetServerUri(bool ws, Uri serverUri, EngineIO eio, string sid, string path, IEnumerable<KeyValuePair<string, string>> queryParams)
         {
             var builder = new StringBuilder();
             if (serverUri.Scheme == "https" || serverUri.Scheme == "wss")
@@ -35,10 +35,9 @@ namespace SocketIOClient.UriConverters
                 builder.Append(path);
             }
             builder
-                .Append("/?EIO=")
-                .Append((int)eio)
-                .Append("&transport=")
-                .Append(ws ? "websocket" : "polling");
+                .Append("/?EIO=").Append((int)eio)
+                .Append(sid != null ? "&sid=" + sid : "")
+                .Append("&transport=").Append(ws ? "websocket" : "polling");
 
             if (queryParams != null)
             {

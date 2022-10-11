@@ -21,6 +21,8 @@ namespace SocketIOClient
             AutoUpgrade = true;
         }
 
+        internal string Sid { get; set; }
+
         public string Path { get; set; }
 
         public TimeSpan ConnectionTimeout { get; set; }
