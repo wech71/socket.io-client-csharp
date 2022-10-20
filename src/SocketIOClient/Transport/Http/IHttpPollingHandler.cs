@@ -11,6 +11,8 @@ namespace SocketIOClient.Transport.Http
     {
         Action<string> OnTextReceived { get; set; }
         Action<byte[]> OnBytesReceived { get; set; }
+        bool IsSendingOrPolling { get; }
+
         Task GetAsync(string uri, CancellationToken cancellationToken);
         Task SendAsync(HttpRequestMessage req, CancellationToken cancellationToken);
         Task PostAsync(string uri, string content, CancellationToken cancellationToken);

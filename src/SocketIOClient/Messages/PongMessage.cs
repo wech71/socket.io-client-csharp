@@ -19,9 +19,11 @@ namespace SocketIOClient.Messages
         public TransportProtocol Protocol { get; set; }
 
         public TimeSpan Duration { get; set; }
+        public string Payload { get; internal set; }
 
         public void Read(string msg)
         {
+            Payload = msg;
         }
 
         public string Write() => "3";

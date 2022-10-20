@@ -3,17 +3,8 @@ using System.Collections.Generic;
 
 namespace SocketIOClient.Messages
 {
-    public class PingMessage : IMessage
+    public class UpgradeMessage : IMessage
     {
-        public PingMessage()
-        { }
-
-        private string payload;
-        public PingMessage(string payload)
-        {
-            this.payload = payload;
-        }
-
         public MessageType Type => MessageType.Ping;
 
         public List<byte[]> OutgoingBytes { get; set; }
@@ -30,6 +21,6 @@ namespace SocketIOClient.Messages
         {
         }
 
-        public string Write() => "2" + payload;
+        public string Write() => "5";
     }
 }

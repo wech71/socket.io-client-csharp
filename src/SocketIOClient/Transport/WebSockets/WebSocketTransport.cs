@@ -83,6 +83,7 @@ namespace SocketIOClient.Transport.WebSockets
                             {
                                 break;
                             }
+
                         }
                         catch (Exception e)
                         {
@@ -96,6 +97,9 @@ namespace SocketIOClient.Transport.WebSockets
                         break;
                     }
 
+#if DEBUG
+                    System.Diagnostics.Debug.WriteLine($"rcvd result.MessageType={result.MessageType}");
+#endif
                     switch (result.MessageType)
                     {
                         case TransportMessageType.Text:
@@ -128,6 +132,10 @@ namespace SocketIOClient.Transport.WebSockets
         {
             if (_dirty) throw new ObjectNotCleanException();
             _dirty = true;
+#if DEBUG
+            System.Diagnostics.Debug.WriteLine($"Connecting Websocket {uri}");
+#endif
+
             await _ws.ConnectAsync(uri, cancellationToken).ConfigureAwait(false);
             Listen();
         }

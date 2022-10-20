@@ -60,7 +60,11 @@ namespace SocketIOClient.Messages
             {
                 Namespace = string.Empty;
             }
-            Sid = JsonDocument.Parse(msg).RootElement.GetProperty("sid").GetString();
+            
+            if (!string.IsNullOrEmpty(msg))
+            {
+                Sid = JsonDocument.Parse(msg).RootElement.GetProperty("sid").GetString();
+            }
         }
 
         public string Eio4Write()

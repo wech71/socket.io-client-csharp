@@ -40,10 +40,12 @@ namespace SocketIOClient.Transport.Http
         public async Task GetAsync(string uri, CancellationToken cancellationToken)
         {
 #if DEBUG
-            Console.WriteLine($"Get {uri}");
+            System.Diagnostics.Trace.WriteLine($"Get {uri}");
 #endif
             var req = new HttpRequestMessage(HttpMethod.Get, AppendRandom(uri));
+            _polling = true;
             var resMsg = await HttpClient.SendAsync(req, cancellationToken).ConfigureAwait(false);
+            _polling = false;
             if (!resMsg.IsSuccessStatusCode)
             {
                 throw new HttpRequestException($"Response status code does not indicate success: {resMsg.StatusCode}");
@@ -51,12 +53,17 @@ namespace SocketIOClient.Transport.Http
             await ProduceMessageAsync(resMsg).ConfigureAwait(false);
         }
 
+        private bool _polling = false;
+        private bool _sending = false;
+
         public async Task SendAsync(HttpRequestMessage req, CancellationToken cancellationToken)
         {
 #if DEBUG
-            Console.WriteLine($"Send {req.RequestUri}  {req.Content?.ToString()}");
+            System.Diagnostics.Trace.WriteLine($"Send {req.RequestUri}  {req.Content?.ToString()}");
 #endif
+            _sending = true;
             var resMsg = await HttpClient.SendAsync(req, cancellationToken).ConfigureAwait(false);
+            _sending = false;
             if (!resMsg.IsSuccessStatusCode)
             {
                 throw new HttpRequestException($"Response status code does not indicate success: {resMsg.StatusCode}");
@@ -67,7 +74,10 @@ namespace SocketIOClient.Transport.Http
         public async virtual Task PostAsync(string uri, string content, CancellationToken cancellationToken)
         {
             var httpContent = new StringContent(content);
+            _sending = true;
             var resMsg = await HttpClient.PostAsync(AppendRandom(uri), httpContent, cancellationToken).ConfigureAwait(false);
+            _sending = false;
+
             await ProduceMessageAsync(resMsg).ConfigureAwait(false);
         }
 
@@ -136,5 +146,7 @@ namespace SocketIOClient.Transport.Http
                 return new Eio3HttpPollingHandler(adapter);
             return new Eio4HttpPollingHandler(adapter);
         }
+
+        public bool IsSendingOrPolling => _polling || _sending;
     }
 }

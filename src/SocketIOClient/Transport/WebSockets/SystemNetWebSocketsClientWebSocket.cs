@@ -53,7 +53,11 @@ namespace SocketIOClient.Transport.WebSockets
             _ws.Options.SetRequestHeader(key, val);
         }
 
-        public void SetProxy(IWebProxy proxy) => _ws.Options.Proxy = proxy;
+        public void SetProxy(IWebProxy proxy)
+        { 
+            if (proxy != null)
+                _ws.Options.Proxy = proxy; //default = System.Net.WebSockets.WebSocketHandle.DefaultWebProxy
+        }
 
         public void Dispose()
         {

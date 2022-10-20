@@ -219,5 +219,10 @@ namespace SocketIOClient.Transport
                 }
             }
         }
+
+        virtual internal async Task Pause()
+        {
+            await Task.CompletedTask;
+        }
     }
 }

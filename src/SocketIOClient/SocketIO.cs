@@ -2,8 +2,11 @@
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Linq;
 using System.Net.Http;
+using System.Net.Sockets;
 using System.Net.WebSockets;
+using System.Security.Cryptography;
 using System.Threading;
 using System.Threading.Tasks;
 using SocketIOClient.Extensions;
@@ -13,6 +16,7 @@ using SocketIOClient.Transport;
 using SocketIOClient.Transport.Http;
 using SocketIOClient.Transport.WebSockets;
 using SocketIOClient.UriConverters;
+using static System.Net.Mime.MediaTypeNames;
 
 namespace SocketIOClient
 {
@@ -91,9 +95,7 @@ namespace SocketIOClient
 
         public SocketIOOptions Options { get; }
 
-        public IJsonSerializer JsonSerializer { get; set; }
-
-        public HttpClient HttpClient { get; set; }
+        public IJsonSerializer JsonSerializer { get; set; }        
 
         public Func<IClientWebSocket> ClientWebSocketProvider { get; set; }
         public Func<IHttpClientAdapter> HttpClientAdapterProvider { get; set; }
@@ -101,6 +103,7 @@ namespace SocketIOClient
         List<IDisposable> _resources = new List<IDisposable>();
 
         BaseTransport _transport;
+        TransportProtocol _upgradeTo = TransportProtocol.Polling;
 
         List<Type> _expectedExceptions;
 
@@ -162,10 +165,6 @@ namespace SocketIOClient
 
             JsonSerializer = new SystemTextJsonSerializer();
 
-            HttpClient = new HttpClient();
-            foreach (var entry in Options.ExtraHeaders)
-                HttpClient.DefaultRequestHeaders.Add(entry.Key, entry.Value);
-
             ClientWebSocketProvider = () => new SystemNetWebSocketsClientWebSocket();
             HttpClientAdapterProvider = () => new DefaultHttpClientAdapter();
             _expectedExceptions = new List<Type>
@@ -178,7 +177,7 @@ namespace SocketIOClient
             };
         }
 
-        private void CreateTransport()
+        private BaseTransport CreateTransport(TransportProtocol transportProtocol, List<IDisposable> resources)
         {
             var transportOptions = new TransportOptions
             {
@@ -187,25 +186,18 @@ namespace SocketIOClient
                 Auth = GetAuth(Options.Auth),
                 ConnectionTimeout = Options.ConnectionTimeout
             };
-            
-            var connectResponse = GetProtocolAsync().GetAwaiter().GetResult();
-            if (connectResponse != null)
-            {
-                Options.Transport = connectResponse.Protocol;
-                if (connectResponse.Sid != null)
-                    Options.Sid = connectResponse.Sid;
-            }
 
-            if (Options.Transport == TransportProtocol.Polling)
+            BaseTransport transport;
+            if (transportProtocol== TransportProtocol.Polling)
             {
-                var adapter = HttpClientAdapterProvider();
+                var adapter = CreateHttpClientAdapter();
                 if (adapter is null)
                 {
                     throw new ArgumentNullException(nameof(HttpClientAdapterProvider), $"{HttpClientAdapterProvider} returns a null");
                 }
-                _resources.Add(adapter);
+                resources.Add(adapter);
                 var handler = HttpPollingHandler.CreateHandler(transportOptions.EIO, adapter);
-                _transport = new HttpTransport(transportOptions, handler);
+                transport = new HttpTransport(transportOptions, handler);
             }
             else
             {
@@ -214,13 +206,100 @@ namespace SocketIOClient
                 {
                     throw new ArgumentNullException(nameof(ClientWebSocketProvider), $"{ClientWebSocketProvider} returns a null");
                 }
-                _resources.Add(ws);
-                _transport = new WebSocketTransport(transportOptions, ws);
+                resources.Add(ws);
+                transport = new WebSocketTransport(transportOptions, ws);
             }
-            _transport.Namespace = _namespace;
-            SetHeaders();
-            _transport.SetProxy(Options.Proxy);
-            _resources.Add(_transport);
+            transport.Namespace = _namespace;
+            SetHeaders(transport);
+            transport.SetProxy(Options.Proxy);
+            resources.Add(transport);
+            return transport;
+        }
+
+        private IHttpClientAdapter CreateHttpClientAdapter()
+        {
+            var httpClientAdapter = HttpClientAdapterProvider();
+            httpClientAdapter.SetProxy(Options.Proxy);
+            return httpClientAdapter;
+        }
+
+        private void CreateTransport()
+        {
+            var connectResponse = GetProtocolAsync().GetAwaiter().GetResult();
+            _transport = CreateTransport(Options.Transport, _resources);
+
+            if (connectResponse != null)
+            {
+                if (Options.Transport != connectResponse.Protocol)
+                {
+                    if (connectResponse.Protocol == TransportProtocol.WebSocket)
+                    {
+                        _upgradeTo = TransportProtocol.WebSocket;
+                        Options.Sid = connectResponse.Sid;
+                        Task.Factory.StartNew(async () =>
+                        {
+                            await TryUpgrade(connectResponse.Protocol, connectResponse.Sid);
+                        });
+                    }
+                }
+            }
+
+        }
+
+        private async Task<bool> TryUpgrade(TransportProtocol protocol, string sid)
+        {
+            List<IDisposable> tmpResources = new List<IDisposable>();
+            try
+            {
+                var cancellationTokenSource = new CancellationTokenSource();
+                var websocketTransport = CreateTransport(protocol, tmpResources);
+
+                ////connect to default namespace "/" message(4) connect(0) => "40"
+                ////https://github.com/socketio/socket.io-protocol#4-message  Request n°2
+                //Uri uri = UriConverter.GetServerUri(false, ServerUri, Options.EIO, sid, Options.Path, Options.Query);
+                //string text = await(await HttpClient.PostAsync(uri, new StringContent("40"))).Content.ReadAsStringAsync();
+                //if (text != "ok")
+                //    throw new Exception("unexpected response for message 0" + text);
+
+                var upgradeProbeTimeout = new CancellationTokenSource();
+                var upgradedSignal = new ManualResetEvent(false);
+                websocketTransport.OnReceived = async (msg) => 
+                {
+                    if (msg is PongMessage && ((PongMessage)msg).Payload == "probe")
+                    {
+                        await _transport.Pause();
+                        await _transport.DisconnectAsync(cancellationTokenSource.Token);
+                        DisposeResources();
+                        _resources.AddRange(tmpResources);
+                        tmpResources.Clear();
+                        _transport = websocketTransport;
+                        upgradedSignal.Set();
+                        await websocketTransport.SendAsync(new UpgradeMessage(), cancellationTokenSource.Token);
+                    }
+                };
+
+                Uri uri = UriConverter.GetServerUri(true, ServerUri, Options.EIO, sid, Options.Path, Options.Query);
+                await websocketTransport.ConnectAsync(uri, cancellationTokenSource.Token);
+                await websocketTransport.SendAsync(new PingMessage("probe"), cancellationTokenSource.Token);
+
+                if(WaitHandle.WaitAny(new WaitHandle[] { upgradedSignal, cancellationTokenSource.Token.WaitHandle }, Options.ConnectionTimeout) == WaitHandle.WaitTimeout)
+                {
+                    cancellationTokenSource.Cancel();
+                    return false;
+                }
+
+                //while (true)
+                //{
+                //    //text = await HttpClient.GetStringAsync(uri); // => 40{"sid":"wZX3oN0bSVIhsaknAAAI"}
+                //    //OnTextReceived(text);
+                //}
+            }
+            finally 
+            {
+                foreach (IDisposable disposable in tmpResources) 
+                    disposable.Dispose();
+            }
+            return true;
         }
 
         private string GetAuth(object auth)
@@ -233,11 +312,16 @@ namespace SocketIOClient
 
         private void SetHeaders()
         {
+            SetHeaders(_transport);
+        }
+
+        private void SetHeaders(BaseTransport transport)
+        {
             if (Options.ExtraHeaders != null)
             {
                 foreach (var item in Options.ExtraHeaders)
                 {
-                    _transport.AddHeader(item.Key, item.Value);
+                    transport.AddHeader(item.Key, item.Value);
                 }
             }
         }
@@ -285,6 +369,21 @@ namespace SocketIOClient
                         _transport.OnReceived = OnMessageReceived;
                         _transport.OnError = OnErrorReceived;
                         await _transport.ConnectAsync(_realServerUri, timeoutCts.Token).ConfigureAwait(false);
+
+                        if (Options.EIO == EngineIO.V4)
+                        {
+                            var connectNamespaceMessage = new ConnectedMessage(); //connect to namespace (https://github.com/socketio/socket.io-protocol#4-message Request n°2 (namespace connection request))
+                            try
+                            {
+                                await _transport.SendAsync(connectNamespaceMessage, CancellationToken.None).ConfigureAwait(false);
+                            }
+                            catch (Exception e)
+                            {
+#if DEBUG
+                                System.Diagnostics.Debug.WriteLine(e);
+#endif
+                            }
+                        }
                         break;
                     }
                     catch (Exception e)
@@ -331,6 +430,7 @@ namespace SocketIOClient
             });
         }
 
+        // https://github.com/socketio/socket.io-protocol#4-message Request n°1 (open packet)
         private async Task<OpenedMessage> GetProtocolAsync()
         {
             if (Options.Transport == TransportProtocol.Polling && Options.AutoUpgrade)
@@ -338,13 +438,23 @@ namespace SocketIOClient
                 Uri uri = UriConverter.GetServerUri(false, ServerUri, Options.EIO, Options.Sid, Options.Path, Options.Query);
                 try
                 {
-                    string text = await HttpClient.GetStringAsync(uri);
-                    if (text.StartsWith("0"))
+#if DEBUG
+                    System.Diagnostics.Debug.WriteLine($"GetStringAsync({uri})");
+#endif
+
+                    HttpClient httpClient = CreateHttpClientAdapter().HttpClient;
+                    foreach (var entry in Options.ExtraHeaders)
+                        httpClient.DefaultRequestHeaders.Add(entry.Key, entry.Value);
+
+                    string text = await httpClient.GetStringAsync(uri);
+                    if (text.StartsWith("0")) //engine.io Open Message?
                     {
                         var openedMessage = new OpenedMessage();
                         openedMessage.Read(text.Substring(1));
                         if (openedMessage.Upgrades.Contains("websocket"))
+                        {
                             openedMessage.Protocol = TransportProtocol.WebSocket;
+                        }
                         return openedMessage;
                     }
                 }
@@ -414,7 +524,7 @@ namespace SocketIOClient
 
         private void ConnectedHandler(ConnectedMessage msg)
         {
-            Id = msg.Sid;
+            Id = msg.Sid ?? Options.Sid; //socket.io v5 sends sid, v4 does not
             Connected = true;
             OnConnected.TryInvoke(this, EventArgs.Empty);
             if (_attempts > 0)
@@ -814,7 +924,6 @@ namespace SocketIOClient
 
         public void Dispose()
         {
-            HttpClient.Dispose();
             _transport.TryDispose();
             _ackHandlers.Clear();
             _onAnyHandlers.Clear();
